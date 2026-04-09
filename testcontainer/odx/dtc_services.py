@@ -10,6 +10,7 @@
 
 from odxtools.compumethods.compucategory import CompuCategory
 from odxtools.compumethods.compumethod import CompuMethod
+from odxtools.dataobjectproperty import DataObjectProperty
 from odxtools.diaglayers.diaglayerraw import DiagLayerRaw
 from odxtools.diagservice import DiagService
 from odxtools.dtcdop import DtcDop
@@ -22,8 +23,10 @@ from odxtools.parameters.valueparameter import ValueParameter
 from odxtools.physicaltype import PhysicalType
 from odxtools.request import Request
 from odxtools.response import Response, ResponseType
+from odxtools.minmaxlengthtype import MinMaxLengthType
 from odxtools.standardlengthtype import StandardLengthType
 from odxtools.structure import Structure
+from odxtools.termination import Termination
 from odxtools.text import Text
 
 from helper import (
@@ -265,6 +268,7 @@ def add_dtc_read_by_dtc_number_service(
     subfunction: int,
     description: str,
     dtc_record_dop: OdxLinkRef,
+    dtc_snapshot_dop: OdxLinkRef
 ):
     """
     Add a DTC Reading service (0x19).
@@ -317,6 +321,12 @@ def add_dtc_read_by_dtc_number_service(
                 ),
                 # TODO:
                 # Add DTC Snapshot Record Structure here (not relevant for now)
+                ValueParameter(
+                    short_name="DTCSnapshotRecord",
+                    semantic="DATA",
+                    byte_position=6,
+                    dop_ref=dtc_snapshot_dop,
+                ),
             ]
         ),
     )
@@ -452,12 +462,129 @@ def add_dtc_read_services(dlr: DiagLayerRaw):
     )
     dlr.diag_data_dictionary_spec.structures.append(dtc_record_structure)
 
+    # uint8 DOP for the snapshot record number field in the response
+    dtc_snapshot_record_number_dop = DataObjectProperty(
+        odx_id=derived_id(dlr, "DOP.DTCSnapshotRecordNumberDop"),
+        short_name="DTCSnapshotRecordNumberDop",
+        compu_method=CompuMethod(
+            category=CompuCategory.IDENTICAL,
+            physical_type=DataType.A_UINT32,
+            internal_type=DataType.A_UINT32,
+        ),
+        physical_type=PhysicalType(base_data_type=DataType.A_UINT32),
+        diag_coded_type=StandardLengthType(
+            base_data_type=DataType.A_UINT32,
+            bit_length=8,
+        ),
+    )
+    dlr.diag_data_dictionary_spec.data_object_props.append(dtc_snapshot_record_number_dop)
+
+    # uint8 DOP for the number-of-identifiers field in the snapshot record
+    dtc_snapshot_number_of_identifiers_dop = DataObjectProperty(
+        odx_id=derived_id(dlr, "DOP.DTCSnapshotNumberOfIdentifiersDop"),
+        short_name="DTCSnapshotNumberOfIdentifiersDop",
+        compu_method=CompuMethod(
+            category=CompuCategory.IDENTICAL,
+            physical_type=DataType.A_UINT32,
+            internal_type=DataType.A_UINT32,
+        ),
+        physical_type=PhysicalType(base_data_type=DataType.A_UINT32),
+        diag_coded_type=StandardLengthType(
+            base_data_type=DataType.A_UINT32,
+            bit_length=8,
+        ),
+    )
+    dlr.diag_data_dictionary_spec.data_object_props.append(
+        dtc_snapshot_number_of_identifiers_dop
+    )
+
+    # uint16 DOP for the 2-byte DID within a snapshot record
+    dtc_snapshot_did_dop = DataObjectProperty(
+        odx_id=derived_id(dlr, "DOP.DTCSnapshotDidDop"),
+        short_name="DTCSnapshotDidDop",
+        compu_method=CompuMethod(
+            category=CompuCategory.IDENTICAL,
+            physical_type=DataType.A_UINT32,
+            internal_type=DataType.A_UINT32,
+        ),
+        physical_type=PhysicalType(base_data_type=DataType.A_UINT32),
+        diag_coded_type=StandardLengthType(
+            base_data_type=DataType.A_UINT32,
+            bit_length=16,
+        ),
+    )
+    dlr.diag_data_dictionary_spec.data_object_props.append(dtc_snapshot_did_dop)
+
+    # Variable-length bytefield DOP for the data bytes associated with the DID
+    dtc_snapshot_did_data_dop = DataObjectProperty(
+        odx_id=derived_id(dlr, "DOP.DTCSnapshotDidDataDop"),
+        short_name="DTCSnapshotDidDataDop",
+        compu_method=CompuMethod(
+            category=CompuCategory.IDENTICAL,
+            physical_type=DataType.A_BYTEFIELD,
+            internal_type=DataType.A_BYTEFIELD,
+        ),
+        physical_type=PhysicalType(base_data_type=DataType.A_BYTEFIELD),
+        diag_coded_type=MinMaxLengthType(
+            base_data_type=DataType.A_BYTEFIELD,
+            min_length=0,
+            max_length=0xFFFF,
+            termination=Termination.END_OF_PDU,
+        ),
+    )
+    dlr.diag_data_dictionary_spec.data_object_props.append(dtc_snapshot_did_data_dop)
+
+    # Structure DOP for a single DTC Snapshot record (UDS §11.3.4)
+    # Layout: [RecordNumber(1)] [NumberOfIdentifiers(1)] [DID(2)] [DID data(variable)]
+    dtc_snapshot_record_structure = Structure(
+        odx_id=derived_id(dlr, "STRUCT.DTCSnapshotRecord"),
+        short_name="DTCSnapshotRecord",
+        parameters=named_item_list_from_parts(
+            [
+                [
+                    ValueParameter(
+                        short_name="DTCSnapshotRecordNumber",
+                        semantic="DATA",
+                        byte_position=0,
+                        dop_ref=ref(dtc_snapshot_record_number_dop.odx_id),
+                    ),
+                    ValueParameter(
+                        short_name="DTCSnapshotNumberOfIdentifiers",
+                        semantic="DATA",
+                        byte_position=1,
+                        dop_ref=ref(dtc_snapshot_number_of_identifiers_dop.odx_id),
+                    ),
+                    ValueParameter(
+                        short_name="DTCSnapshotDid",
+                        semantic="DATA",
+                        byte_position=2,
+                        dop_ref=ref(dtc_snapshot_did_dop.odx_id),
+                    ),
+                    ValueParameter(
+                        short_name="DTCSnapshotDidData",
+                        semantic="DATA",
+                        byte_position=4,
+                        dop_ref=ref(dtc_snapshot_did_data_dop.odx_id),
+                    ),
+                ]
+            ]
+        ),
+    )
+    dlr.diag_data_dictionary_spec.structures.append(dtc_snapshot_record_structure)
+
     dtc_end_of_pdu = EndOfPduField(
         odx_id=derived_id(dlr, "EndOfPdu.DTCRecords"),
         short_name="DTCRecords",
         structure_ref=ref(dtc_record_structure.odx_id),
     )
     dlr.diag_data_dictionary_spec.end_of_pdu_fields.append(dtc_end_of_pdu)
+
+    dtc_snapshot_end_of_pdu = EndOfPduField(
+        odx_id=derived_id(dlr, "EndOfPdu.DTCSnapshotRecords"),
+        short_name="DTCSnapshotRecords",
+        structure_ref=ref(dtc_snapshot_record_structure.odx_id),
+    )
+    dlr.diag_data_dictionary_spec.end_of_pdu_fields.append(dtc_snapshot_end_of_pdu)
 
     # 19 02 -  Report DTC By Status Mask
     add_dtc_read_by_mask_service(
@@ -474,7 +601,8 @@ def add_dtc_read_services(dlr: DiagLayerRaw):
         "FaultMem_ReportDTCSnapshotRecordByDtcNumber",
         0x04,
         "Report DTC Snapshot Record By DTC Number",
-        ref(dtc_end_of_pdu.odx_id),
+        ref(dtc_record_structure.odx_id),
+        ref(dtc_snapshot_end_of_pdu.odx_id),
     )
 
     # 19 06 -  Report DTC By DTC Number
@@ -487,7 +615,8 @@ def add_dtc_read_services(dlr: DiagLayerRaw):
         "FaultMem_ReportDTCExtDataRecordByDtcNumber",
         0x06,
         "Report DTC Extended Data Record By DTC Number",
-        ref(dtc_end_of_pdu.odx_id),
+        ref(dtc_record_structure.odx_id),
+        ref(dtc_snapshot_end_of_pdu.odx_id),
     )
 
 
