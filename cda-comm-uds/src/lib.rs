@@ -962,16 +962,38 @@ impl<S: EcuGateway, R: DiagServiceResponse, T: EcuManager<Response = R>> UdsMana
                         arr.iter()
                             .filter_map(|item| {
                                 item.as_object().and_then(|obj| {
-                                    let record = obj.iter().find_map(|(_, v)| v.as_object());
-                                    let record_number = obj.iter().find_map(|(_, v)| {
-                                        if v.is_object() { None } else { Some(v) }
+                                    let record = obj.iter().find_map(|(k, _)| {
+                                        // Select the other entry not containing the record number
+                                        if !(k.to_lowercase().contains("recordnumber")
+                                            || k.to_lowercase().contains("recordnr"))
+                                        {
+                                            Some(obj)
+                                        } else {
+                                            None
+                                        }
                                     });
+                                    let record_number = obj.iter().find_map(|(k, v)| {
+                                        // TODO is this the best way?
+                                        // Select record number only if the key contains the expected strings
+                                        if (k.to_lowercase().contains("recordnumber")
+                                            || k.to_lowercase().contains("recordnr"))
+                                            && v.as_u64().is_some_and(|n| n <= 255) // And it's type is UINT8
+                                        {
+                                            Some(v)
+                                        } else {
+                                            None
+                                        }
+                                    });
+
+                                    tracing::info!("obj : {:?}", obj);
+                                    tracing::info!("record : {:?}", record);
+                                    tracing::info!("record_number : {:?}", record_number);
 
                                     if let (Some(record_number), Some(record)) =
                                         (record_number, record)
                                     {
                                         Some((
-                                            record_number.to_string().replace('"', ""),
+                                            record_number.to_string(),
                                             serde_json::Value::Object(record.clone()),
                                         ))
                                     } else {
@@ -1005,6 +1027,7 @@ impl<S: EcuGateway, R: DiagServiceResponse, T: EcuManager<Response = R>> UdsMana
         memory_selection: Option<u8>,
         scope: DtcReadInformationFunction,
     ) -> Result<(Option<ExtendedSnapshots>, Option<serde_json::Value>), DiagServiceError> {
+
         fn extract_schema_properties(schema_desc: &SchemaDescription) -> Option<serde_json::Value> {
             let param_properties = schema_desc.get_param_properties()?;
             let mut schema = serde_json::Map::new();
@@ -1051,6 +1074,7 @@ impl<S: EcuGateway, R: DiagServiceResponse, T: EcuManager<Response = R>> UdsMana
         }
 
         let snapshot_json = snapshot_data_response.into_json()?;
+        tracing::info!("Got snapshot data json: {:?}", snapshot_json);
         let snapshot_data: Option<HashMap<_, _>> = snapshot_json
             .data
             .as_object()
@@ -1061,8 +1085,14 @@ impl<S: EcuGateway, R: DiagServiceResponse, T: EcuManager<Response = R>> UdsMana
                     .filter_map(|param| param.as_object())
                     .filter_map(|obj| {
                         let records = obj.values().find_map(|v| v.as_array());
-                        let number_of_identifiers = obj.values().find_map(|v| v.as_number());
-                        let record_number_of_snapshot = obj.values().find(|v| v.is_string());
+                        let number_of_identifiers = records.map(|arr| arr.len());
+                        let record_number_of_snapshot = obj.values().find_map(|v| v.as_number());
+
+                        tracing::info!("obj : {:?}", obj);
+                        tracing::info!("records : {:?}", records);
+                        tracing::info!("number_of_identifiers : {:?}", number_of_identifiers);
+                        tracing::info!("record_number_of_snapshot : {:?}", record_number_of_snapshot);
+
                         if let (
                             Some(records),
                             Some(number_of_identifiers),
@@ -1070,11 +1100,9 @@ impl<S: EcuGateway, R: DiagServiceResponse, T: EcuManager<Response = R>> UdsMana
                         ) = (records, number_of_identifiers, record_number_of_snapshot)
                         {
                             Some((
-                                record_number_of_snapshot.to_string().replace('"', ""),
+                                record_number_of_snapshot.to_string(),
                                 (DtcSnapshot {
-                                    number_of_identifiers: number_of_identifiers
-                                        .as_u64()
-                                        .unwrap_or_default(),
+                                    number_of_identifiers: number_of_identifiers as u64,
                                     record: records.clone(),
                                 }),
                             ))
@@ -1084,6 +1112,8 @@ impl<S: EcuGateway, R: DiagServiceResponse, T: EcuManager<Response = R>> UdsMana
                     })
                     .collect()
             });
+
+        tracing::info!("Got snapshot data: {:?}", snapshot_data.clone().unwrap());
         Ok((
             Some(ExtendedSnapshots {
                 data: snapshot_data,

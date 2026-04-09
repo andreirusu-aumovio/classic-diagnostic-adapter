@@ -347,10 +347,10 @@ def negative_response(
         short_name=f"NRC_{short_name}",
         compu_method=CompuMethod(
             category=CompuCategory.IDENTICAL,
-            physical_type=DataType.A_BYTEFIELD,
-            internal_type=DataType.A_BYTEFIELD,
+            physical_type=DataType.A_UINT32,
+            internal_type=DataType.A_UINT32,
         ),
-        physical_type=PhysicalType(base_data_type=DataType.A_BYTEFIELD),
+        physical_type=PhysicalType(base_data_type=DataType.A_UINT32),
         diag_coded_type=StandardLengthType(
             base_data_type=DataType.A_UINT32, bit_length=8
         ),
