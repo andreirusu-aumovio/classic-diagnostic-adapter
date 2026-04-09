@@ -26,6 +26,7 @@ from odxtools.standardlengthtype import StandardLengthType
 from odxtools.structure import Structure
 from odxtools.text import Text
 from odxtools.transmode import TransMode
+from odxtools.dynamiclengthfield import DetermineNumberOfItems, DynamicLengthField
 
 from helper import (
     find_dop_by_shortname,
@@ -275,7 +276,7 @@ def add_dtc_read_by_mask_service(
     )
 
 
-def add_dtc_read_by_dtc_number_service(
+def add_dtc_read_snapshots_by_dtc_number_service(
     dlr: DiagLayerRaw,
     name: str,
     subfunction: int,
@@ -283,7 +284,7 @@ def add_dtc_read_by_dtc_number_service(
     dtc_record_dop: OdxLinkRef,
 ):
     """
-    Add a DTC Reading service (0x19).
+    Adds the service for DTC Reading (0x19) with Snapshot Data.
 
     Args:
         dlr: The diagnostic layer
@@ -292,6 +293,111 @@ def add_dtc_read_by_dtc_number_service(
         description: Description of the service
         dtc_record_dop: OdxLinkRef for the DTC record,
     """
+
+    dtc_snapshot_record_dop = texttable_int_str_dop(
+        dlr,
+        "DtcSnapshotRecordDop",
+        [
+            (16, "First Occurence"),
+            (32, "Last Occurence"),
+            (255, "All Snapshot Records"),
+        ],
+    )
+    dlr.diag_data_dictionary_spec.data_object_props.append(dtc_snapshot_record_dop)
+
+    # TEXTTABLE uint8 DOP for the snapshot record number field in the response
+    # Maps all possible uint8 values (0–255) to their decimal string representation
+    # Currently CDA expects a String type for this field
+    dtc_snapshot_record_number_dop = texttable_int_str_dop(
+        dlr,
+        "DTCSnapshotRecordNumberDop",
+        [(i, f"{i:02X}") for i in range(256)],
+    )
+    dlr.diag_data_dictionary_spec.data_object_props.append(dtc_snapshot_record_number_dop)
+
+    # uint8 DOP for the number-of-identifiers field in the snapshot record
+    dtc_snapshot_number_of_identifiers_dop = find_dop_by_shortname(dlr, "IDENTICAL_UINT_8")
+
+    # uint16 DOP for the 2-byte DID within a snapshot record
+    dtc_snapshot_did_dop = find_dop_by_shortname(dlr, "IDENTICAL_UINT_16")
+
+    # uint32 DOP for the data bytes associated with the DID as example
+    dtc_snapshot_did_data_dop = find_dop_by_shortname(dlr, "IDENTICAL_UINT_32")
+
+    # Structure DOP for a single Snapshot entry (DID + Data)
+    dtc_snapshot_record_did_entry_structure = Structure(
+        odx_id=derived_id(dlr, "STRUCT.DTCSnapshotRecordDidEntry"),
+        short_name="DTCSnapshotRecordDidEntry",
+        parameters=NamedItemList(
+            [
+                ValueParameter(
+                    short_name="DTCSnapshotRecordDid",
+                    semantic="DATA",
+                    byte_position=0,
+                    dop_ref=ref(dtc_snapshot_did_dop),
+                ),
+                ValueParameter(
+                    short_name="DTCSnapshotRecordDidData",
+                    semantic="DATA",
+                    byte_position=2,
+                    dop_ref=ref(dtc_snapshot_did_data_dop),
+                ),
+            ]
+        ),
+    )
+    dlr.diag_data_dictionary_spec.structures.append(dtc_snapshot_record_did_entry_structure)
+
+    # Dynamic Field for actual data (Number of DIDs + Variable number of DIDs with their data)
+    dtc_snapshot_record_entries = DynamicLengthField(
+        odx_id=derived_id(dlr, "DYN_FIELD.DTCSnapshotRecordEntries"),
+        short_name="DTCSnapshotRecordEntries",
+        structure_ref=ref(dtc_snapshot_record_did_entry_structure.odx_id),
+        offset=1,   # count byte is at offset 0, items start at offset 1
+        determine_number_of_items=DetermineNumberOfItems(
+            byte_position=0,    # count integer at byte 0 of the field
+            dop_ref=ref(dtc_snapshot_number_of_identifiers_dop),
+        ),
+    )
+
+    dlr.diag_data_dictionary_spec.dynamic_length_fields.append(dtc_snapshot_record_entries)
+
+    # Structure DOP for a complete DTC Snapshot Record (Rec Number + Number of DIDs + Data Entries)
+    # Layout: [RecordNumber(1)] [NumberOfIdentifiers(1)] [DID(2)][DID data(4)] ... [DID[2]][DID data(4)]
+    dtc_snapshot_record_structure = Structure(
+        odx_id=derived_id(dlr, "STRUCT.DTCSnapshotRecord"),
+        short_name="DTCSnapshotRecord",
+        parameters=NamedItemList(
+            [
+                ValueParameter(
+                    short_name="DTCSnapshotRecordNumber",
+                    semantic="DATA",
+                    byte_position=0,
+                    dop_ref=ref(dtc_snapshot_record_number_dop),
+                ),
+                ValueParameter(
+                    short_name="DTCSnapshotRecordNumberOfIdentifiers",
+                    semantic="DATA",
+                    byte_position=1,
+                    dop_ref=ref(dtc_snapshot_number_of_identifiers_dop),
+                ),
+                ValueParameter(
+                    short_name="DTCSnapshotRecordEntries",
+                    semantic="DATA",
+                    byte_position=1,
+                    dop_ref=ref(dtc_snapshot_record_entries),
+                ),
+            ]
+        ),
+    )
+    dlr.diag_data_dictionary_spec.structures.append(dtc_snapshot_record_structure)
+
+    dtc_snapshot_end_of_pdu = EndOfPduField(
+        odx_id=derived_id(dlr, "EndOfPdu.DTCSnapshotRecords"),
+        short_name="DTCSnapshotRecords",
+        structure_ref=ref(dtc_snapshot_record_structure.odx_id),
+    )
+    dlr.diag_data_dictionary_spec.end_of_pdu_fields.append(dtc_snapshot_end_of_pdu)
+
     request = Request(
         odx_id=derived_id(dlr, f"RQ.RQ_{name}"),
         short_name=f"RQ_{name}",
@@ -331,8 +437,12 @@ def add_dtc_read_by_dtc_number_service(
                     byte_position=2,
                     dop_ref=dtc_record_dop,
                 ),
-                # TODO:
-                # Add DTC Snapshot Record Structure here (not relevant for now)
+                ValueParameter(
+                    short_name="DTCSnapshotRecords",
+                    semantic="DATA",
+                    byte_position=6,
+                    dop_ref=ref(dtc_snapshot_end_of_pdu),
+                ),
             ]
         ),
     )
@@ -349,6 +459,140 @@ def add_dtc_read_by_dtc_number_service(
         )
     )
 
+def add_dtc_read_ext_data_by_dtc_number_service(
+    dlr: DiagLayerRaw,
+    name: str,
+    subfunction: int,
+    description: str,
+    dtc_record_dop: OdxLinkRef,
+):
+    """
+    Adds the service for DTC Reading (0x19) with Extended Data.
+
+    Args:
+        dlr: The diagnostic layer
+        name: Service name (e.g., "reportDTCByStatusMask")
+        subfunction: The subfunction value (e.g, 0x02)
+        description: Description of the service
+        dtc_record_dop: OdxLinkRef for the DTC record,
+    """
+
+    dtc_req_ext_data_record_number_dop = texttable_int_str_dop(
+        dlr,
+        "DtcReqExtDataRecordNrDop",
+        [
+            (16, "First Occurence"),
+            (32, "Last Occurence"),
+            (254, "All Ext Data Records"),
+            (255, "All Ext Data Records"),
+        ],
+    )
+    dlr.diag_data_dictionary_spec.data_object_props.append(dtc_req_ext_data_record_number_dop)
+
+    # TEXTTABLE uint8 DOP for the Extended data record number field in the response
+    # Maps all possible uint8 values (0–255) to their decimal string representation
+    # Currently CDA expects a String type for this field
+    dtc_ext_data_record_number_dop = texttable_int_str_dop(
+        dlr,
+        "DTCExtDataRecordNumberDop",
+        [(i, f"{i:02X}") for i in range(256)],
+    )
+    dlr.diag_data_dictionary_spec.data_object_props.append(dtc_ext_data_record_number_dop)
+
+    # uint32 DOP for the actual data bytes as example
+    dtc_ext_data_record_data_dop = find_dop_by_shortname(dlr, "IDENTICAL_UINT_32")
+
+    # Structure DOP for a single DTC Extended Data record
+    # Layout: [RecordNumber(1)] [Data(4)]
+    dtc_ext_data_record_structure = Structure(
+        odx_id=derived_id(dlr, "STRUCT.DTCExtDataRecord"),
+        short_name="DTCExtDataRecord",
+        parameters=NamedItemList(
+            [
+                ValueParameter(
+                    short_name="DTCExtDataRecordNumber",
+                    semantic="DATA",
+                    byte_position=0,
+                    dop_ref=ref(dtc_ext_data_record_number_dop),
+                ),
+                ValueParameter(
+                    short_name="DTCExtDataRecordData",
+                    semantic="DATA",
+                    byte_position=1,
+                    dop_ref=ref(dtc_ext_data_record_data_dop),
+                ),
+            ]
+        ),
+    )
+    dlr.diag_data_dictionary_spec.structures.append(dtc_ext_data_record_structure)
+
+    dtc_ext_data_end_of_pdu = EndOfPduField(
+        odx_id=derived_id(dlr, "EndOfPdu.DTCExtDataRecord"),
+        short_name="DTCExtDataRecord",
+        structure_ref=ref(dtc_ext_data_record_structure.odx_id),
+    )
+    dlr.diag_data_dictionary_spec.end_of_pdu_fields.append(dtc_ext_data_end_of_pdu)
+
+    request = Request(
+        odx_id=derived_id(dlr, f"RQ.RQ_{name}"),
+        short_name=f"RQ_{name}",
+        parameters=NamedItemList(
+            [
+                sid_parameter_rq(0x19),
+                subfunction_rq(subfunction, "SubFunction"),
+                ValueParameter(
+                    short_name="DtcCode",
+                    semantic="DATA",
+                    byte_position=2,
+                    bit_position=0,
+                    dop_ref=ref(find_dtc_dop(dlr, "RecordDataType")),
+                ),
+                ValueParameter(
+                    short_name="DTCExtDataRecordNr",
+                    semantic="DATA",
+                    byte_position=5,
+                    dop_ref=ref(find_dop_by_shortname(dlr, "DtcReqExtDataRecordNrDop")),
+                ),
+            ]
+        ),
+    )
+    dlr.requests.append(request)
+
+    response = Response(
+        response_type=ResponseType.POSITIVE,
+        odx_id=derived_id(dlr, f"PR.PR_{name}"),
+        short_name=f"PR_{name}",
+        parameters=NamedItemList(
+            [
+                sid_parameter_pr(0x19 + 0x40),
+                matching_request_parameter_subfunction("SubFunction"),
+                ValueParameter(
+                    short_name="DTCAndStatusRecord",
+                    semantic="DATA",
+                    byte_position=2,
+                    dop_ref=dtc_record_dop,
+                ),
+                ValueParameter(
+                    short_name="DTCExtDataRecords",
+                    semantic="DATA",
+                    byte_position=6,
+                    dop_ref=ref(dtc_ext_data_end_of_pdu),
+                ),
+            ]
+        ),
+    )
+    dlr.positive_responses.append(response)
+
+    dlr.diag_comms_raw.append(
+        DiagService(
+            odx_id=derived_id(dlr, f"DC.{name}"),
+            short_name=name,
+            long_name=description,
+            functional_class_refs=[functional_class_ref(dlr, "FaultMem")],
+            request_ref=ref(request),
+            pos_response_refs=[ref(response)],
+        )
+    )
 
 def add_dtc_read_services(dlr: DiagLayerRaw):
     """
@@ -369,17 +613,6 @@ def add_dtc_read_services(dlr: DiagLayerRaw):
         bit_length=1,
     )
     dlr.diag_data_dictionary_spec.data_object_props.append(true_false_dop)
-
-    dtc_snapshot_record_dop = texttable_int_str_dop(
-        dlr,
-        "DtcSnapshotRecordDop",
-        [
-            (16, "First Occurence"),
-            (32, "Last Occurence"),
-            (255, "All Snapshot Records"),
-        ],
-    )
-    dlr.diag_data_dictionary_spec.data_object_props.append(dtc_snapshot_record_dop)
 
     # Create DTC DOP
     dtc_dop = DtcDop(
@@ -483,25 +716,21 @@ def add_dtc_read_services(dlr: DiagLayerRaw):
     )
 
     # 19 04 -  Report DTC By DTC Number
-    add_dtc_read_by_dtc_number_service(
+    add_dtc_read_snapshots_by_dtc_number_service(
         dlr,
         "FaultMem_ReportDTCSnapshotRecordByDtcNumber",
         0x04,
         "Report DTC Snapshot Record By DTC Number",
-        ref(dtc_end_of_pdu.odx_id),
+        ref(dtc_record_structure.odx_id),
     )
 
     # 19 06 -  Report DTC By DTC Number
-    # TODO: (out of scope for now)
-    # Change this to not reuse the snapshot record req & resp, but instead
-    # create service that has an end of pdu field for DTCExtDataRecord
-    # as last parameter
-    add_dtc_read_by_dtc_number_service(
+    add_dtc_read_ext_data_by_dtc_number_service(
         dlr,
         "FaultMem_ReportDTCExtDataRecordByDtcNumber",
         0x06,
         "Report DTC Extended Data Record By DTC Number",
-        ref(dtc_end_of_pdu.odx_id),
+        ref(dtc_record_structure.odx_id),
     )
 
 
