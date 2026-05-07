@@ -47,6 +47,7 @@ COPY integration-tests/Cargo.toml ./integration-tests/Cargo.toml
 COPY cda-build/Cargo.toml ./cda-build/Cargo.toml
 COPY comm-mbedtls/mbedtls-rs/Cargo.toml ./comm-mbedtls/mbedtls-rs/Cargo.toml
 COPY comm-mbedtls/mbedtls-sys/Cargo.toml ./comm-mbedtls/mbedtls-sys/Cargo.toml
+COPY opensovd-axum-extra/Cargo.toml ./opensovd-axum-extra/Cargo.toml
 
 # Generate the recipe.json which describes dependencies
 RUN cargo chef prepare --recipe-path recipe.json
@@ -91,6 +92,7 @@ COPY cda-extra ./cda-extra
 COPY integration-tests ./integration-tests
 COPY cda-build ./cda-build
 COPY comm-mbedtls ./comm-mbedtls
+COPY opensovd-axum-extra ./opensovd-axum-extra
 
 ENV RUSTC_WRAPPER=sccache \
     SCCACHE_DIR=/sccache
